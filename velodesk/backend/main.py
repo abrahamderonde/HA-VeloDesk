@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
@@ -20,9 +20,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from typing import Any, Dict, List, Optional, Set
 from fastapi import UploadFile, File
 from .models.database import (
-    init_db, import_legacy_database, get_db, Activity, TrainingMetrics, PowerCurve,
-    FTPEstimate, PlannedWorkout, TrainingGoal,
-    VisitedGemeente,
+    init_db, get_db, Activity, TrainingMetrics, PowerCurve,
+    FTPEstimate, PlannedWorkout, TrainingGoal, StravaToken,
+    VisitedGemeente, WorkoutLibrary,
 )
 from .services.garmin_service import GarminService
 from .services.garmin_import_service import GarminImportService
@@ -3251,7 +3251,11 @@ async def set_eddington_milestone(
 # ─── Frontend SPA catch-all ───────────────────────────────────────────────────
 
 @app.get("/{full_path:path}", response_class=HTMLResponse)
-async def serve_spa(full_path: str):
+async def serve_spa(full_path: str) -> Response:
+    root: str = os.path.realpath(frontend_path)
+    candidate: str = os.path.realpath(os.path.join(root, full_path))
+    if full_path and candidate.startswith(root + os.sep) and os.path.isfile(candidate):
+        return FileResponse(candidate)
     index_path = f"{frontend_path}/index.html"
     if os.path.exists(index_path):
         with open(index_path) as f:
