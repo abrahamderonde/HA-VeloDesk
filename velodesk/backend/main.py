@@ -58,7 +58,7 @@ scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    import_legacy_database()
+#    import_legacy_database()
     await init_db()
     
     # Schedule nightly PMC recalculation
