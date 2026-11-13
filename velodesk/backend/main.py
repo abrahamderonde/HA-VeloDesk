@@ -265,16 +265,18 @@ async def nightly_workout_library_sync():
 
 
 @app.post("/trainiq/garmin/import-workout-library")
-async def garmin_import_workout_library(background_tasks: BackgroundTasks):
+async def garmin_import_workout_library(
+    background_tasks: BackgroundTasks, ftp: Optional[float] = None
+):
     async def _import():
         from .models.database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
-            ftp = await get_current_ftp(db)
+            ftp_value: float = ftp or await get_current_ftp(db)
             svc = GarminWorkoutLibraryService(
                 CONFIG.get("garmin_email", ""),
                 CONFIG.get("garmin_password", ""),
                 db,
-                ftp=ftp,
+                ftp=ftp_value,
             )
             result = await svc.sync_library()
             logger.info("Manual workout library sync: %s", result)
@@ -2727,11 +2729,12 @@ async def add_workout_from_library(request: Request, db: AsyncSession = Depends(
         raise HTTPException(status_code=404, detail="Library workout not found")
 
     ftp = await get_current_ftp(db)
+    resolved_intervals = resolve_intervals_to_watts(lib.intervals or [], ftp)
     duration_s = lib.estimated_duration_s or sum(
-        int(iv.get("duration_seconds", 0)) * int(iv.get("repeats", 1)) for iv in (lib.intervals or [])
+        int(iv.get("duration_seconds", 0)) * int(iv.get("repeats", 1)) for iv in resolved_intervals
     )
     weighted_if_sq = 0.0
-    for iv in (lib.intervals or []):
+    for iv in resolved_intervals:
         p_low, p_high = iv.get("power_low"), iv.get("power_high")
         dur = int(iv.get("duration_seconds", 0)) * int(iv.get("repeats", 1))
         if p_low and p_high and dur > 0 and ftp > 0:
@@ -2746,7 +2749,7 @@ async def add_workout_from_library(request: Request, db: AsyncSession = Depends(
         workout_type=lib.workout_type or "endurance",
         target_tss=target_tss,
         target_duration_minutes=round(duration_s / 60) if duration_s else None,
-        intervals=lib.intervals,
+        intervals=resolved_intervals,
         goal_id=goal_id,
     )
     db.add(workout)

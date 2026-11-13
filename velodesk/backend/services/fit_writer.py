@@ -184,7 +184,11 @@ def _expand(iv: dict, start_idx: int) -> list:
                       'ttype':ttype,'tlow':t_low,'thigh':t_high,'intensity':intensity})
         idx += 1
         if rest > 0:
+            r_low, r_high = iv.get('rest_power_low'), iv.get('rest_power_high')
             steps.append({'idx':idx,'name':'Rest','dur':rest,
-                          'ttype':TARGET_OPEN,'tlow':0,'thigh':0,'intensity':INTENSITY_REST})
+                          'ttype':TARGET_POWER if r_low else TARGET_OPEN,
+                          'tlow':int(r_low) if r_low else 0,
+                          'thigh':int(r_high) if r_high else 0,
+                          'intensity':INTENSITY_REST})
             idx += 1
     return steps

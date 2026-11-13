@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from ..models.database import WorkoutLibrary, WorkoutLibraryIgnored, PlannedWorkout
-from .training_science import get_power_zones
+from .training_science import get_power_zones, resolve_intervals_to_watts, watts_to_pct
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,8 @@ class GarminWorkoutLibraryService:
                         "duration_seconds": self._step_duration(work_step),
                         "repeats": repeats,
                         "rest_seconds": self._step_duration(rest_step),
+                        "rest_power_low": self._step_power(rest_step)[0],
+                        "rest_power_high": self._step_power(rest_step)[1],
                         "power_low": p_low,
                         "power_high": p_high,
                     })
@@ -126,6 +128,62 @@ class GarminWorkoutLibraryService:
                     "power_high": p_high,
                 })
         return intervals
+
+    def _normalize_intervals(
+        self, intervals: List[Dict[str, Any]], default_rest_pct: float = 0.55
+    ) -> List[Dict[str, Any]]:
+        ftp = self.ftp
+        warmup_pct: Optional[float] = None
+        for iv in intervals:
+            if iv.get("type") == "warmup":
+                low = watts_to_pct(iv.get("power_low"), ftp)
+                high = watts_to_pct(iv.get("power_high"), ftp)
+                if low and high:
+                    warmup_pct = (low + high) / 2
+                    break
+        rest_pct: float = warmup_pct or default_rest_pct
+
+        result: List[Dict[str, Any]] = []
+        for iv in intervals:
+            item: Dict[str, Any] = dict(iv)
+            item["ftp_pct_low"] = watts_to_pct(iv.get("power_low"), ftp)
+            item["ftp_pct_high"] = watts_to_pct(iv.get("power_high"), ftp)
+
+            steps: List[Dict[str, Any]] = []
+            for step in iv.get("steps") or []:
+                s: Dict[str, Any] = dict(step)
+                s_low = watts_to_pct(step.get("power_low"), ftp)
+                s_high = watts_to_pct(step.get("power_high"), ftp)
+                if not s_low:
+                    s_low = s_high = rest_pct
+                s["ftp_pct_low"], s["ftp_pct_high"] = s_low, s_high
+                steps.append(s)
+            item["steps"] = steps
+
+            if int(iv.get("rest_seconds") or 0) > 0:
+                own_low = watts_to_pct(iv.get("rest_power_low"), ftp)
+                own_high = watts_to_pct(iv.get("rest_power_high"), ftp)
+                item["rest_pct_low"] = own_low or rest_pct
+                item["rest_pct_high"] = own_high or own_low or rest_pct
+
+            if iv.get("type") == "recovery" and not item["ftp_pct_low"]:
+                item["ftp_pct_low"] = item["ftp_pct_high"] = rest_pct
+
+            result.append(item)
+        return result
+
+    def _intervals_for_entry(
+        self,
+        entry: Optional[WorkoutLibrary],
+        parsed: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        if entry and entry.intervals and entry.raw_garmin_json:
+            old_segments = (entry.raw_garmin_json or {}).get("workoutSegments") or []
+            old_steps = old_segments[0].get("workoutSteps") if old_segments else []
+            has_pct = any(iv.get("ftp_pct_low") for iv in entry.intervals)
+            if has_pct and self._parse_garmin_steps(old_steps) == parsed:
+                return entry.intervals
+        return self._normalize_intervals(parsed)
 
     def _compute_zone_seconds(self, intervals: List[Dict[str, Any]], ftp: float) -> Dict[str, int]:
         zones = get_power_zones(ftp)
@@ -191,12 +249,7 @@ class GarminWorkoutLibraryService:
             name = detail.get("workoutName") or summary.get("workoutName") or "Untitled"
             segments = detail.get("workoutSegments") or []
             raw_steps = segments[0].get("workoutSteps") if segments else []
-            intervals = self._parse_garmin_steps(raw_steps)
-            has_power = any(iv.get("power_low") for iv in intervals)
-            workout_type = (
-                self._classify_workout_type(self._compute_zone_seconds(intervals, self.ftp))
-                if has_power else "unclassified"
-            )
+            parsed = self._parse_garmin_steps(raw_steps)
 
             if str(workout_id) in trainiq_ids:
                 source = "trainiq"
@@ -210,6 +263,13 @@ class GarminWorkoutLibraryService:
             )
             entry = existing.scalar_one_or_none()
             estimated_duration_s = int(detail.get("estimatedDurationInSecs") or 0)
+            intervals = self._intervals_for_entry(entry, parsed)
+            resolved = resolve_intervals_to_watts(intervals, self.ftp)
+            has_power = any(iv.get("power_low") for iv in resolved)
+            workout_type = (
+                self._classify_workout_type(self._compute_zone_seconds(resolved, self.ftp))
+                if has_power else "unclassified"
+            )
 
             if entry:
                 entry.name = name

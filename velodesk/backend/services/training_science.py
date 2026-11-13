@@ -11,7 +11,7 @@ import numpy as np
 from scipy.optimize import curve_fit, minimize
 from scipy.signal import savgol_filter
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple, Dict
+from typing import Any, Dict, List, Optional, Tuple, Dict
 import logging
 
 logger = logging.getLogger(__name__)
@@ -421,3 +421,36 @@ def get_power_zones(ftp: float) -> List[Dict]:
         {"zone": 7, "name": "Neuromuscular",    "min": round(ftp * 1.51), "max": 9999},
     ]
     return zones
+
+
+def watts_to_pct(watts: Optional[float], ftp: float) -> Optional[float]:
+    if not watts or ftp <= 0:
+        return None
+    return round(float(watts) / ftp, 4)
+
+
+def resolve_intervals_to_watts(
+    intervals: List[Dict[str, Any]], ftp: float
+) -> List[Dict[str, Any]]:
+    def watts(pct: Optional[float]) -> Optional[int]:
+        return round(float(pct) * ftp) if pct else None
+
+    result: List[Dict[str, Any]] = []
+    for iv in intervals:
+        item: Dict[str, Any] = dict(iv)
+        if iv.get("ftp_pct_low"):
+            item["power_low"] = watts(iv["ftp_pct_low"])
+            item["power_high"] = watts(iv.get("ftp_pct_high") or iv["ftp_pct_low"])
+        if iv.get("rest_pct_low"):
+            item["rest_power_low"] = watts(iv["rest_pct_low"])
+            item["rest_power_high"] = watts(iv.get("rest_pct_high") or iv["rest_pct_low"])
+        steps: List[Dict[str, Any]] = []
+        for step in iv.get("steps") or []:
+            s: Dict[str, Any] = dict(step)
+            if step.get("ftp_pct_low"):
+                s["power_low"] = watts(step["ftp_pct_low"])
+                s["power_high"] = watts(step.get("ftp_pct_high") or step["ftp_pct_low"])
+            steps.append(s)
+        item["steps"] = steps
+        result.append(item)
+    return result

@@ -143,7 +143,9 @@ class GarminService:
                 else:
                     inner = [make_step(1, skey, dur_s, target)]
                 if rest_s > 0:
-                    inner.append(make_step(len(inner)+1, "recovery", rest_s, NO_TARGET))
+                    r_low, r_high = iv.get("rest_power_low"), iv.get("rest_power_high")
+                    rest_target = power_target(r_low, r_high) if r_low and r_high else NO_TARGET
+                    inner.append(make_step(len(inner)+1, "recovery", rest_s, rest_target))
                 steps.append({
                     "type": "RepeatGroupDTO",
                     "stepOrder": order,
@@ -159,7 +161,9 @@ class GarminService:
                 steps.append(make_step(order, skey, dur_s, target))
                 order += 1
                 if rest_s > 0:
-                    steps.append(make_step(order, "recovery", rest_s, NO_TARGET))
+                    r_low, r_high = iv.get("rest_power_low"), iv.get("rest_power_high")
+                    rest_target = power_target(r_low, r_high) if r_low and r_high else NO_TARGET
+                    steps.append(make_step(order, "recovery", rest_s, rest_target))
                     order += 1
 
         return {
