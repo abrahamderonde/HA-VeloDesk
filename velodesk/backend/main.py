@@ -2,8 +2,10 @@
 Main FastAPI application for Strava Training Platform.
 """
 import os
+import re
 import json
 import asyncio
+import unicodedata
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -29,7 +31,8 @@ from .services.garmin_import_service import GarminImportService
 from .services.ai_coach import AICoachService
 from .services.training_science import (
     calculate_pmc, fit_critical_power, build_power_curve,
-    merge_power_curves, POWER_CURVE_DURATIONS, get_power_zones
+    merge_power_curves, POWER_CURVE_DURATIONS, get_power_zones,
+    normalize_intervals, resolve_intervals_to_watts,
 )
 from .services.gemeente_service import GemeenteService
 from .services.ride_analysis import DEFAULT_W_PRIME, analyse_ride, compute_quick_stats
@@ -163,8 +166,12 @@ async def _export_workouts_for_date(db: AsyncSession, target_date):
         CONFIG.get("garmin_password", ""),
     )
     exported = 0
+    ftp = await get_current_ftp(db)
     for workout in workouts:
-        ids = await garmin.auto_export_workout(workout)
+        workout.intervals = normalize_intervals(workout.intervals or [], ftp)
+        ids = await garmin.auto_export_workout(
+            workout, resolve_intervals_to_watts(workout.intervals, ftp)
+        )
         if ids.get("garmin_workout_id"):
             workout.garmin_workout_id = ids["garmin_workout_id"]
             workout.garmin_schedule_id = ids.get("garmin_schedule_id")
@@ -2250,7 +2257,7 @@ async def generate_week(request: Request, db: AsyncSession = Depends(get_db)):
             target_tss=wo.get("target_tss"),
             target_duration_minutes=wo.get("target_duration_minutes"),
             target_if=wo.get("target_if"),
-            intervals=wo.get("intervals"),
+            intervals=normalize_intervals(wo.get("intervals") or [], ftp),
             goal_id=goal.id,
         )
         db.add(workout)
@@ -2321,8 +2328,14 @@ async def download_fit(workout_id: int, db: AsyncSession = Depends(get_db)):
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
     try:
-        fit_data = generate_workout_fit(workout)
-        filename = f"{workout.date.strftime('%Y-%m-%d')}_{workout.title.replace(' ', '_')[:30]}.fit"
+        ftp = await get_current_ftp(db)
+        fit_intervals = resolve_intervals_to_watts(
+            normalize_intervals(workout.intervals or [], ftp), ftp
+        )
+        fit_data = generate_workout_fit(workout, fit_intervals)
+        ascii_title = unicodedata.normalize("NFKD", workout.title or "workout").encode("ascii", "ignore").decode()
+        safe_title = re.sub(r"[^A-Za-z0-9_-]+", "_", ascii_title)[:30].strip("_") or "workout"
+        filename = f"{workout.date.strftime('%Y-%m-%d')}_{safe_title}.fit"
         return Response(
             content=fit_data,
             media_type="application/octet-stream",
@@ -2357,7 +2370,11 @@ async def export_to_garmin(workout_id: int, db: AsyncSession = Depends(get_db)):
         workout.garmin_schedule_id = None
         workout.exported_to_garmin = False
 
-    ids = await garmin.auto_export_workout(workout)
+    ftp = await get_current_ftp(db)
+    workout.intervals = normalize_intervals(workout.intervals or [], ftp)
+    ids = await garmin.auto_export_workout(
+        workout, resolve_intervals_to_watts(workout.intervals, ftp)
+    )
     if ids.get("garmin_workout_id"):
         workout.garmin_workout_id = ids["garmin_workout_id"]
         workout.garmin_schedule_id = ids.get("garmin_schedule_id")

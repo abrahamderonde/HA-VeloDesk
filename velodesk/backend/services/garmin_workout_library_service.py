@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from ..models.database import WorkoutLibrary, WorkoutLibraryIgnored, PlannedWorkout
-from .training_science import get_power_zones, resolve_intervals_to_watts, watts_to_pct
+from .training_science import get_power_zones, normalize_intervals, resolve_intervals_to_watts
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +183,7 @@ class GarminWorkoutLibraryService:
             has_pct = any(iv.get("ftp_pct_low") for iv in entry.intervals)
             if has_pct and self._parse_garmin_steps(old_steps) == parsed:
                 return entry.intervals
-        return self._normalize_intervals(parsed)
+        return normalize_intervals(parsed, self.ftp)
 
     def _compute_zone_seconds(self, intervals: List[Dict[str, Any]], ftp: float) -> Dict[str, int]:
         zones = get_power_zones(ftp)

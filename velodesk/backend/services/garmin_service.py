@@ -3,9 +3,10 @@ Garmin Connect integration using python-garminconnect >= 0.3.2
 Uses client.connectapi() directly with plain dicts — no pydantic dependency.
 Tokens stored in /config/strava_training/garmin_tokens (HA config volume).
 """
+import asyncio
 import logging
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +52,16 @@ class GarminService:
                 logger.error("Garmin login failed: %s", e)
             return False
 
-    async def export_workout(self, workout) -> Optional[str]:
+    async def export_workout(
+        self, workout, intervals: Optional[List[Dict[str, Any]]] = None
+    ) -> Optional[str]:
         """Upload workout to Garmin Connect using upload_workout (POST)."""
         if not self._client:
             if not await self.connect():
                 return None
         try:
-            payload = self._build_workout(workout)
-            response = self._client.upload_workout(payload)
+            payload = self._build_workout(workout, intervals)
+            response = await asyncio.to_thread(self._client.upload_workout, payload)
             workout_id = (response or {}).get("workoutId")
             logger.info("Uploaded '%s' to Garmin (ID: %s)", workout.title, workout_id)
             return str(workout_id) if workout_id else None
@@ -78,7 +81,52 @@ class GarminService:
             logger.error("Schedule failed: %s", e)
             return False
 
-    def _build_workout(self, workout) -> Dict:
+    async def auto_export_workout(
+        self, workout, intervals: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Optional[str]]:
+        workout_id = await self.export_workout(workout, intervals)
+        if not workout_id or not self._client:
+            return {"garmin_workout_id": None, "garmin_schedule_id": None}
+        schedule_id: Optional[str] = None
+        try:
+            date_str = workout.date.strftime("%Y-%m-%d")
+            response = await asyncio.to_thread(
+                self._client.schedule_workout, workout_id, date_str
+            )
+            raw_id = (response or {}).get("workoutScheduleId")
+            schedule_id = str(raw_id) if raw_id else None
+        except Exception as e:
+            logger.error("Garmin schedule failed: %s", e)
+        return {"garmin_workout_id": workout_id, "garmin_schedule_id": schedule_id}
+
+    async def delete_from_garmin(
+        self, garmin_workout_id: Optional[str], garmin_schedule_id: Optional[str] = None
+    ) -> bool:
+        if not self._client and not await self.connect():
+            return False
+        ok = True
+        if garmin_schedule_id:
+            try:
+                await asyncio.to_thread(self._client.unschedule_workout, garmin_schedule_id)
+            except Exception as e:
+                logger.warning("Unschedule %s failed: %s", garmin_schedule_id, e)
+                ok = False
+        if garmin_workout_id:
+            try:
+                await asyncio.to_thread(self._client.delete_workout, garmin_workout_id)
+            except Exception as e:
+                logger.warning("Delete workout %s failed: %s", garmin_workout_id, e)
+                ok = False
+        return ok
+
+    async def delete_garmin_workout(
+        self, garmin_workout_id: Optional[str], garmin_schedule_id: Optional[str] = None
+    ) -> bool:
+        return await self.delete_from_garmin(garmin_workout_id, garmin_schedule_id)
+
+    def _build_workout(
+        self, workout, intervals: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict:
         """Build Garmin workout JSON from TrainIQ PlannedWorkout.
         All IDs from garminconnect/workout.py StepType/ConditionType/TargetType enums.
         """
@@ -116,7 +164,8 @@ class GarminService:
         steps = []
         order = 1
 
-        for iv in (workout.intervals or []):
+        source_intervals = intervals if intervals is not None else (workout.intervals or [])
+        for iv in source_intervals:
             itype   = iv.get("type", "work")
             dur_s   = int(iv.get("duration_seconds", 300))
             repeats = int(iv.get("repeats", 1))

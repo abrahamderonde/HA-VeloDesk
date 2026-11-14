@@ -6,7 +6,7 @@ Duration value for DURATION_TIME is in SECONDS (not milliseconds).
 import struct
 import logging
 from datetime import datetime, date
-from typing import List, Dict
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def _crc16(data: bytes, crc: int = 0) -> int:
 
 def _str_bytes(s: str, size: int) -> bytes:
     """Encode string to exactly `size` bytes, null-terminated and null-padded."""
-    b = (s or '').encode('utf-8')[:size-1]
+    b = (s or '').encode('utf-8')[:size-1].decode('utf-8', 'ignore').encode('utf-8')
     return b + b'\x00' * (size - len(b))
 
 
@@ -89,11 +89,11 @@ def _data(local: int, fields: list, values: list) -> bytes:
     return bytes(buf)
 
 
-def generate_workout_fit(workout) -> bytes:
+def generate_workout_fit(workout, intervals: Optional[List[Dict[str, Any]]] = None) -> bytes:
     """Generate a valid Garmin FIT workout file from a PlannedWorkout."""
     now = _fit_time(datetime.now())
     name = (workout.title or 'Workout')[:16]
-    intervals = workout.intervals or []
+    intervals = intervals if intervals is not None else (workout.intervals or [])
     num_steps = _count_steps(intervals)
 
     rec = bytearray()

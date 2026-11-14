@@ -454,3 +454,54 @@ def resolve_intervals_to_watts(
         item["steps"] = steps
         result.append(item)
     return result
+
+def _interval_avg_pct(iv: Dict[str, Any], ftp: float) -> Optional[float]:
+    values: List[float] = []
+    for src in iv.get("steps") or [iv]:
+        low = src.get("ftp_pct_low") or watts_to_pct(src.get("power_low"), ftp)
+        high = src.get("ftp_pct_high") or watts_to_pct(src.get("power_high"), ftp)
+        if low and high:
+            values.append((low + high) / 2)
+    return sum(values) / len(values) if values else None
+
+
+def normalize_intervals(
+    intervals: List[Dict[str, Any]], ftp: float, default_rest_pct: float = 0.55
+) -> List[Dict[str, Any]]:
+    warmup_values: List[float] = [
+        p for p in (
+            _interval_avg_pct(iv, ftp) for iv in intervals if iv.get("type") == "warmup"
+        ) if p
+    ]
+    rest_pct: float = (
+        sum(warmup_values) / len(warmup_values) if warmup_values else default_rest_pct
+    )
+
+    result: List[Dict[str, Any]] = []
+    for iv in intervals:
+        item: Dict[str, Any] = dict(iv)
+        item["ftp_pct_low"] = iv.get("ftp_pct_low") or watts_to_pct(iv.get("power_low"), ftp)
+        item["ftp_pct_high"] = iv.get("ftp_pct_high") or watts_to_pct(iv.get("power_high"), ftp)
+
+        steps: List[Dict[str, Any]] = []
+        for step in iv.get("steps") or []:
+            s: Dict[str, Any] = dict(step)
+            s_low = step.get("ftp_pct_low") or watts_to_pct(step.get("power_low"), ftp)
+            s_high = step.get("ftp_pct_high") or watts_to_pct(step.get("power_high"), ftp)
+            if not s_low:
+                s_low = s_high = rest_pct
+            s["ftp_pct_low"], s["ftp_pct_high"] = s_low, s_high or s_low
+            steps.append(s)
+        item["steps"] = steps
+
+        if int(iv.get("rest_seconds") or 0) > 0:
+            own_low = iv.get("rest_pct_low") or watts_to_pct(iv.get("rest_power_low"), ftp)
+            own_high = iv.get("rest_pct_high") or watts_to_pct(iv.get("rest_power_high"), ftp)
+            item["rest_pct_low"] = own_low or rest_pct
+            item["rest_pct_high"] = own_high or own_low or rest_pct
+
+        if iv.get("type") == "recovery" and not item["ftp_pct_low"]:
+            item["ftp_pct_low"] = item["ftp_pct_high"] = rest_pct
+
+        result.append(item)
+    return result    

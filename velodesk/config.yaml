@@ -1,6 +1,6 @@
 name: "VeloDesk"
 description: "Self-hosted cycling training platform with Garmin sync, PMC, power curves, FTP estimation and AI workout planning"
-version: "0.5.4"
+version: "0.5.5"
 services:
   - mqtt:want
 slug: "velodesk"
